@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jflow.model.AiMessage;
 import com.jflow.model.Task;
 import com.jflow.repository.AiMessageRepository;
+import com.jflow.repository.ProjectRepository;
 import com.jflow.repository.TaskRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,57 +16,49 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.*;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 @Service
 @RequiredArgsConstructor
 public class AiService {
 
+    private static final int MAX_HISTORY_MESSAGES = 20;
+
     private final AiMessageRepository aiMessageRepository;
+    private final ProjectRepository projectRepository;
     private final TaskRepository taskRepository;
     private final ObjectMapper objectMapper;
 
-    @Value("${anthropic.api.key}")
+    @Value("${gemini.api.key:}")
     private String apiKey;
 
-    @Value("${anthropic.api.url}")
+    @Value("${gemini.api.url}")
     private String apiUrl;
+
+    @Value("${gemini.api.demo-mode:false}")
+    private boolean demoMode;
 
     @Transactional
     public String chat(Long projectId, String userMessage) {
-        // Save user message
+        projectRepository.findById(projectId)
+                .orElseThrow(() -> new IllegalArgumentException("Project not found: " + projectId));
+
         aiMessageRepository.save(AiMessage.builder()
                 .projectId(projectId)
                 .role("user")
-                .content(userMessage)
+                .content(userMessage.trim())
                 .build());
 
-        // Build context about project tasks
-        List<Task> tasks = taskRepository.findByProjectIdOrderByCreatedAtDesc(projectId);
-        StringBuilder context = new StringBuilder();
-        context.append("You are J-Flow AI, an intelligent project management assistant. ");
-        context.append("You help small development teams manage tasks, track progress, and get things done.\n\n");
-        context.append("Current project has ").append(tasks.size()).append(" tasks:\n");
-        for (Task t : tasks) {
-            context.append("- [").append(t.getStatus()).append("] ").append(t.getTitle());
-            if (t.getLabel() != null) context.append(" (").append(t.getLabel()).append(")");
-            context.append("\n");
-        }
-        context.append("\nBe concise, helpful, and actionable. You can suggest task breakdowns, priorities, and improvements.");
-
-        // Get history
+        String systemPrompt = buildProjectContext(projectId);
         List<AiMessage> history = aiMessageRepository.findByProjectIdOrderByCreatedAtAsc(projectId);
-        List<Map<String, String>> messages = new ArrayList<>();
-        for (AiMessage msg : history) {
-            Map<String, String> m = new HashMap<>();
-            m.put("role", msg.getRole());
-            m.put("content", msg.getContent());
-            messages.add(m);
-        }
+        List<Map<String, String>> messages = toGeminiHistory(history);
 
-        String assistantReply = callAnthropicApi(context.toString(), messages);
+        String assistantReply = callGeminiApi(systemPrompt, messages);
 
-        // Save assistant reply
         aiMessageRepository.save(AiMessage.builder()
                 .projectId(projectId)
                 .role("assistant")
@@ -75,64 +68,140 @@ public class AiService {
         return assistantReply;
     }
 
-    private String callAnthropicApi(String systemPrompt, List<Map<String, String>> messages) {
-        // Check if using demo key
-        if (apiKey == null || apiKey.equals("demo-key") || !apiKey.startsWith("AIzaSy")) {
+    private String buildProjectContext(Long projectId) {
+        List<Task> tasks = taskRepository.findByProjectIdOrderByCreatedAtDesc(projectId);
+        StringBuilder context = new StringBuilder();
+        context.append("You are J-Flow AI, an intelligent project management assistant. ");
+        context.append("You help small development teams manage tasks, track progress, and get things done.\n\n");
+        context.append("Current project has ").append(tasks.size()).append(" tasks:\n");
+        for (Task task : tasks) {
+            context.append("- [").append(valueOrDefault(task.getStatus(), "TODO")).append("] ")
+                    .append(task.getTitle());
+            if (task.getPriority() != null && !task.getPriority().isBlank()) {
+                context.append(" | priority: ").append(task.getPriority());
+            }
+            if (task.getLabel() != null && !task.getLabel().isBlank()) {
+                context.append(" | label: ").append(task.getLabel());
+            }
+            if (task.getAssignee() != null && !task.getAssignee().isBlank()) {
+                context.append(" | assignee: ").append(task.getAssignee());
+            }
+            context.append("\n");
+        }
+        context.append("\nBe concise, helpful, and actionable. ");
+        context.append("Suggest task breakdowns, priorities, blockers, acceptance criteria, and next steps when useful.");
+        return context.toString();
+    }
+
+    private List<Map<String, String>> toGeminiHistory(List<AiMessage> history) {
+        int fromIndex = Math.max(0, history.size() - MAX_HISTORY_MESSAGES);
+        List<Map<String, String>> messages = new ArrayList<>();
+        String previousRole = null;
+        for (AiMessage msg : history.subList(fromIndex, history.size())) {
+            if (msg.getContent() == null || msg.getContent().isBlank()) {
+                continue;
+            }
+            String role = "assistant".equals(msg.getRole()) ? "model" : "user";
+            if (messages.isEmpty() && "model".equals(role)) {
+                continue;
+            }
+            if (role.equals(previousRole)) {
+                Map<String, String> previousMessage = messages.get(messages.size() - 1);
+                previousMessage.put("content", previousMessage.get("content") + "\n\n" + msg.getContent());
+                continue;
+            }
+            Map<String, String> message = new HashMap<>();
+            message.put("role", role);
+            message.put("content", msg.getContent());
+            messages.add(message);
+            previousRole = role;
+        }
+        return messages;
+    }
+
+    private String callGeminiApi(String systemPrompt, List<Map<String, String>> messages) {
+        if (shouldUseDemoMode()) {
             return generateDemoResponse(messages);
         }
 
         try {
-            // Convert messages to Gemini format
-            List<Map<String, Object>> contents = new ArrayList<>();
-            
-            // Add system prompt as first message
-            Map<String, Object> systemMsg = new HashMap<>();
-            systemMsg.put("role", "user");
-            Map<String, Object> systemPart = new HashMap<>();
-            systemPart.put("text", systemPrompt);
-            systemMsg.put("parts", List.of(systemPart));
-            contents.add(systemMsg);
-            
-            // Add conversation history
-            for (Map<String, String> msg : messages) {
-                Map<String, Object> content = new HashMap<>();
-                String role = "user".equals(msg.get("role")) ? "user" : "model";
-                content.put("role", role);
-                
-                Map<String, Object> part = new HashMap<>();
-                part.put("text", msg.get("content"));
-                content.put("parts", List.of(part));
-                contents.add(content);
-            }
-
             Map<String, Object> body = new HashMap<>();
-            body.put("contents", contents);
+            body.put("system_instruction", Map.of("parts", List.of(Map.of("text", systemPrompt))));
+            body.put("contents", buildGeminiContents(messages));
+            body.put("generationConfig", Map.of(
+                    "temperature", 0.7,
+                    "topP", 0.9,
+                    "maxOutputTokens", 1024
+            ));
 
             String requestBody = objectMapper.writeValueAsString(body);
-
-            HttpClient client = HttpClient.newHttpClient();
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(apiUrl + "?key=" + apiKey))
+                    .uri(URI.create(apiUrl))
+                    .timeout(Duration.ofSeconds(30))
                     .header("Content-Type", "application/json")
+                    .header("x-goog-api-key", apiKey.trim())
                     .POST(HttpRequest.BodyPublishers.ofString(requestBody))
                     .build();
 
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = HttpClient.newHttpClient()
+                    .send(request, HttpResponse.BodyHandlers.ofString());
             JsonNode json = objectMapper.readTree(response.body());
 
-            if (json.has("candidates") && json.get("candidates").isArray() && json.get("candidates").size() > 0) {
-                JsonNode candidate = json.get("candidates").get(0);
-                if (candidate.has("content") && candidate.get("content").has("parts")) {
-                    JsonNode parts = candidate.get("content").get("parts");
-                    if (parts.isArray() && parts.size() > 0) {
-                        return parts.get(0).get("text").asText();
-                    }
-                }
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                return extractGeminiError(json, response.statusCode());
             }
-            return "I encountered an issue connecting to the AI service. Please check your API key.";
+
+            String text = extractGeminiText(json);
+            if (text == null || text.isBlank()) {
+                return "Gemini returned an empty response. Please try again.";
+            }
+            return text.trim();
         } catch (Exception e) {
-            return "AI service error: " + e.getMessage();
+            return "Gemini service error: " + e.getMessage();
         }
+    }
+
+    private boolean shouldUseDemoMode() {
+        return demoMode || apiKey == null || apiKey.isBlank() || "demo-key".equalsIgnoreCase(apiKey.trim());
+    }
+
+    private List<Map<String, Object>> buildGeminiContents(List<Map<String, String>> messages) {
+        List<Map<String, Object>> contents = new ArrayList<>();
+        for (Map<String, String> message : messages) {
+            contents.add(Map.of(
+                    "role", message.get("role"),
+                    "parts", List.of(Map.of("text", message.get("content")))
+            ));
+        }
+        return contents;
+    }
+
+    private String extractGeminiText(JsonNode json) {
+        JsonNode candidates = json.path("candidates");
+        if (!candidates.isArray() || candidates.isEmpty()) {
+            return null;
+        }
+        JsonNode parts = candidates.get(0).path("content").path("parts");
+        if (!parts.isArray() || parts.isEmpty()) {
+            return null;
+        }
+        StringBuilder text = new StringBuilder();
+        for (JsonNode part : parts) {
+            String value = part.path("text").asText(null);
+            if (value != null) {
+                text.append(value);
+            }
+        }
+        return text.toString();
+    }
+
+    private String extractGeminiError(JsonNode json, int statusCode) {
+        String message = json.path("error").path("message").asText("Unknown Gemini API error");
+        return "Gemini API error (HTTP " + statusCode + "): " + message;
+    }
+
+    private String valueOrDefault(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 
     private String generateDemoResponse(List<Map<String, String>> messages) {
@@ -143,7 +212,7 @@ public class AiService {
                    "1. **Prioritize IN_PROGRESS items** — finish what's started before pulling new work\n" +
                    "2. **Break large tasks** into smaller subtasks (2-4 hours each)\n" +
                    "3. **Daily standup** — review TODO → IN_PROGRESS transitions every morning\n\n" +
-                   "_Tip: Set your `ANTHROPIC_API_KEY` env variable to unlock full AI capabilities!_";
+                   "_Tip: Set `GEMINI_API_KEY` to unlock live Gemini responses._";
         } else if (lastMsg.contains("help") || lastMsg.contains("how")) {
             return "I'm J-Flow AI, your project assistant! I can help you:\n\n" +
                    "- 📋 **Analyze your backlog** and suggest priorities\n" +

@@ -237,7 +237,7 @@ export default function ProjectBoard() {
       {/* AI Panel */}
       <div className={`flex-shrink-0 bg-[#0a0a0d] border-l border-border flex flex-col transition-all duration-300 ${aiOpen ? 'w-80' : 'w-10'}`}>
         <div className="h-10 border-b border-border flex items-center px-3 justify-between flex-shrink-0">
-          {aiOpen && <span className="text-[10px] font-mono text-accent tracking-widest">AI JAVA ASSISTANT</span>}
+          {aiOpen && <span className="text-[10px] font-mono text-accent tracking-widest">AI GEMINI ASSISTANT</span>}
           <button onClick={() => setAiOpen(v => !v)} className="text-muted hover:text-textPrimary ml-auto">
             {aiOpen ? <X size={13} /> : <Bot size={14} />}
           </button>
