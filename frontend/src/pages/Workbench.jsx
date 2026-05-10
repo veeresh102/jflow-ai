@@ -65,7 +65,7 @@ export default function Workbench() {
           {/* Main chat area */}
           <div className="flex-1 bg-panel border border-border rounded-2xl shadow-lg overflow-hidden flex flex-col">
             <div className="px-6 py-5 border-b border-border bg-[#050506]">
-              <p className="text-[11px] font-mono text-accent tracking-widest">AI JAVA ASSISTANT</p>
+              <p className="text-[11px] font-mono text-accent tracking-widest">AI GEMINI ASSISTANT</p>
               <h2 className="text-lg font-semibold mt-2">Ask me about your project tasks, priorities, or architecture decisions.</h2>
             </div>
 

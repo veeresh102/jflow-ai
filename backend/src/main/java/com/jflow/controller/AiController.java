@@ -12,7 +12,6 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/ai")
 @RequiredArgsConstructor
-@CrossOrigin(origins = {"http://localhost:3000", "http://localhost:5173", "http://localhost:5174"})
 public class AiController {
 
     private final AiService aiService;
@@ -25,8 +24,12 @@ public class AiController {
         if (message == null || message.isBlank()) {
             return ResponseEntity.badRequest().body(Map.of("error", "Message cannot be empty"));
         }
-        String reply = aiService.chat(projectId, message);
-        return ResponseEntity.ok(Map.of("reply", reply));
+        try {
+            String reply = aiService.chat(projectId, message);
+            return ResponseEntity.ok(Map.of("reply", reply));
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.status(404).body(Map.of("error", ex.getMessage()));
+        }
     }
 
     @GetMapping("/history/{projectId}")
