@@ -85,30 +85,43 @@ The app works in **demo mode** out of the box with smart pre-written responses. 
 To enable **live Gemini AI**:
 
 1. Get an API key from https://aistudio.google.com/app/apikey
-2. Set the environment variables before starting the backend:
+2. Configure the backend with either a `.env` file or shell environment variables.
 
-**Linux/Mac:**
+**Option A — `.env` file (recommended for local development):**
+
+```bash
+cp .env.example .env
+# edit .env and set GEMINI_API_KEY=your-gemini-api-key
+cd backend
+mvn spring-boot:run
+```
+
+The backend loads `.env` from the repo root and from `backend/.env`. Real OS environment variables still win over `.env` values.
+
+**Option B — shell variables:**
+
+Linux/Mac:
 ```bash
 cd backend
 export GEMINI_API_KEY=your-gemini-api-key
 mvn spring-boot:run
 ```
 
-**Windows (PowerShell):**
+Windows (PowerShell):
 ```powershell
 cd backend
 $env:GEMINI_API_KEY="your-gemini-api-key"
 mvn spring-boot:run
 ```
 
-Optional overrides:
+Optional `.env` / environment overrides:
 
 ```bash
-export GEMINI_API_MODEL=gemini-2.5-flash
-export GEMINI_DEMO_MODE=true  # force local demo responses even when GEMINI_API_KEY is set
+GEMINI_API_MODEL=gemini-2.5-flash
+GEMINI_DEMO_MODE=true  # force local demo responses even when GEMINI_API_KEY is set
 ```
 
-Backend defaults are configured in `backend/src/main/resources/application.properties`:
+Backend defaults are configured in `backend/src/main/resources/application.properties`; the `.env` loader feeds these placeholders before Spring starts:
 
 ```properties
 gemini.api.key=${GEMINI_API_KEY:}
@@ -179,7 +192,7 @@ jflow-ai/
 
 Backend API: http://localhost:8080/api
 
-Frontend API client: uses `/api` by default through the Vite dev proxy. Set `VITE_API_BASE_URL` only when calling a backend on a different origin.
+Frontend API client: uses `/api` by default through the Vite dev proxy. If you set `VITE_API_BASE_URL` in `frontend/.env`, it must start with `VITE_` and include the `/api` suffix, for example `VITE_API_BASE_URL=http://localhost:8080/api`.
 
 H2 Console: http://localhost:8080/h2-console (JDBC: `jdbc:h2:mem:jflowdb`)
 

@@ -1,11 +1,13 @@
 package com.jflow;
 
+import com.jflow.config.DotenvLoader;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
 public class JFlowApplication {
     public static void main(String[] args) {
+        DotenvLoader.load();
         SpringApplication.run(JFlowApplication.class, args);
         System.out.println("\n╔══════════════════════════════════════╗");
         System.out.println("║   J-Flow AI Backend Running! 🚀       ║");
